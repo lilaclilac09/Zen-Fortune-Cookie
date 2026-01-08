@@ -1,0 +1,7 @@
+{
+  "name": "Zen Fortune Cookie",
+  "description": "An interactive fortune cookie experience using hand gesture recognition. Use your hands to virtually pull apart the cookie and reveal your fortune.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
