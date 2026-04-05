@@ -3,11 +3,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Stats, CookieState, Fortune } from './types';
 import { FORTUNES, STORAGE_KEY, GESTURE_THRESHOLD_START, GESTURE_THRESHOLD_PULL } from './constants';
 
+// Access MediaPipe from global window object defined in index.html
 declare const Hands: any;
 declare const Camera: any;
-declare const drawConnectors: any;
-declare const drawLandmarks: any;
-declare const HAND_CONNECTIONS: any;
 
 const App: React.FC = () => {
   const [stats, setStats] = useState<Stats>(() => {
@@ -18,32 +16,36 @@ const App: React.FC = () => {
   const [cookieState, setCookieState] = useState<CookieState>('intact');
   const [currentFortune, setCurrentFortune] = useState<Fortune | null>(null);
   const [isCameraReady, setIsCameraReady] = useState(false);
-  const [numHandsDetected, setNumHandsDetected] = useState(0);
-  const [pullProgress, setPullProgress] = useState(0);
-  const [statusMessage, setStatusMessage] = useState("Initializing Camera...");
-  const [isLocked, setIsLocked] = useState(false);
+  const [handsDetected, setHandsDetected] = useState(false);
+  const [pullProgress, setPullProgress] = useState(0); // 0 to 1
+
+  const [isReadyToPull, setIsReadyToPull] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const handsRef = useRef<any>(null);
+  const lastDistanceRef = useRef<number>(0);
   const isReadyToPullRef = useRef<boolean>(false);
-  const lastSeenTwoHands = useRef<number>(0);
 
+  // Persistence
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
   }, [stats]);
 
   const breakCookie = useCallback(() => {
     if (cookieState !== 'intact') return;
+
     const randomFortune = FORTUNES[Math.floor(Math.random() * FORTUNES.length)];
-    const points = Math.floor(Math.random() * 91) + 10;
-    
+    const points = Math.floor(Math.random() * 91) + 10; // 10 to 100
+
     setCookieState('cracking');
     
-    // Trigger sound if we had one, but let's stick to visual impact
     setTimeout(() => {
       setCookieState('broken');
       setCurrentFortune({ text: randomFortune, points });
-      setStats(prev => ({ totalPoints: prev.totalPoints + points, tapCount: prev.tapCount + 1 }));
+      setStats(prev => ({
+        totalPoints: prev.totalPoints + points,
+        tapCount: prev.tapCount + 1
+      }));
     }, 400);
   }, [cookieState]);
 
@@ -54,12 +56,12 @@ const App: React.FC = () => {
       setCurrentFortune(null);
       setPullProgress(0);
       isReadyToPullRef.current = false;
-      setIsLocked(false);
     }, 300);
   };
 
+  // MediaPipe Initialization
   useEffect(() => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current) return;
 
     const hands = new Hands({
       locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
@@ -72,69 +74,42 @@ const App: React.FC = () => {
       minTrackingConfidence: 0.5
     });
 
-    const canvasCtx = canvasRef.current.getContext('2d')!;
-
     hands.onResults((results: any) => {
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
-      
-      const handsFound = results.multiHandLandmarks?.length || 0;
-      setNumHandsDetected(handsFound);
-      
-      if (results.multiHandLandmarks) {
-        for (const landmarks of results.multiHandLandmarks) {
-          drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color: '#fb923c', lineWidth: 4 });
-          drawLandmarks(canvasCtx, landmarks, { color: '#ffffff', lineWidth: 1, radius: 2 });
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length >= 2) {
+        setHandsDetected(true);
+        
+        // Simple distance calculation between the centers of two hands (palm base)
+        const h1 = results.multiHandLandmarks[0][0];
+        const h2 = results.multiHandLandmarks[1][0];
+        
+        // Convert normalized coordinates to approximate pixel space for easier thresholding
+        const dx = (h1.x - h2.x) * 1000;
+        const dy = (h1.y - h2.y) * 1000;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (!isReadyToPullRef.current && distance < GESTURE_THRESHOLD_START) {
+          isReadyToPullRef.current = true;
+          setIsReadyToPull(true);
         }
 
-        if (handsFound >= 2 && cookieState === 'intact') {
-          lastSeenTwoHands.current = Date.now();
-          const h1 = results.multiHandLandmarks[0][0]; 
-          const h2 = results.multiHandLandmarks[1][0]; 
-          const dx = (h1.x - h2.x) * 1000;
-          const dy = (h1.y - h2.y) * 1000;
-          const distance = Math.sqrt(dx * dx + dy * dy);
+        if (isReadyToPullRef.current) {
+          const progress = Math.min(1, Math.max(0, (distance - GESTURE_THRESHOLD_START) / (GESTURE_THRESHOLD_PULL - GESTURE_THRESHOLD_START)));
+          setPullProgress(progress);
 
-          canvasCtx.beginPath();
-          canvasCtx.moveTo(h1.x * canvasRef.current!.width, h1.y * canvasRef.current!.height);
-          canvasCtx.lineTo(h2.x * canvasRef.current!.width, h2.y * canvasRef.current!.height);
-          canvasCtx.strokeStyle = isReadyToPullRef.current ? '#f59e0b' : '#ffffff';
-          canvasCtx.lineWidth = 6;
-          canvasCtx.stroke();
-
-          if (!isReadyToPullRef.current) {
-            if (distance < GESTURE_THRESHOLD_START) {
-              isReadyToPullRef.current = true;
-              setIsLocked(true);
-              setStatusMessage("LOCKED! NOW PULL! ↔️");
-            } else {
-              setStatusMessage("Bring hands closer together...");
-              setIsLocked(false);
-            }
-          } else {
-            const progress = Math.min(1, Math.max(0, (distance - GESTURE_THRESHOLD_START) / (GESTURE_THRESHOLD_PULL - GESTURE_THRESHOLD_START)));
-            setPullProgress(progress);
-            setStatusMessage("Pulling hard...!");
-
-            if (distance > GESTURE_THRESHOLD_PULL) {
-              breakCookie();
-              isReadyToPullRef.current = false;
-              setIsLocked(false);
-            }
-          }
-        } else if (handsFound < 2 && cookieState === 'intact') {
-          const timeSinceLastSeen = Date.now() - lastSeenTwoHands.current;
-          if (isReadyToPullRef.current && timeSinceLastSeen < 500) {
-            // Tolerate flicker
-          } else {
-            setStatusMessage(handsFound === 1 ? "Show both hands (don't overlap)" : "Place both hands in front of camera 🖐️");
-            setPullProgress(0);
+          if (distance > GESTURE_THRESHOLD_PULL) {
+            breakCookie();
             isReadyToPullRef.current = false;
-            setIsLocked(false);
+            setIsReadyToPull(false);
           }
         }
+        
+        lastDistanceRef.current = distance;
+      } else {
+        setHandsDetected(false);
+        setPullProgress(0);
+        isReadyToPullRef.current = false;
+        setIsReadyToPull(false);
       }
-      canvasCtx.restore();
     });
 
     const camera = new Camera(videoRef.current, {
@@ -146,113 +121,138 @@ const App: React.FC = () => {
     });
 
     camera.start().then(() => setIsCameraReady(true));
-    return () => { camera.stop(); };
-  }, [breakCookie, cookieState]);
+    handsRef.current = hands;
+
+    return () => {
+      camera.stop();
+    };
+  }, [breakCookie]);
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 text-orange-900 font-sans relative">
-      {/* Stats Board */}
-      <div className="absolute top-8 left-8 bg-white/40 backdrop-blur-md p-5 rounded-2xl border border-white/50 shadow-xl transition-all hover:scale-105">
-        <div className="text-xs uppercase tracking-widest opacity-60 font-black mb-1">Total Points</div>
-        <div className="text-4xl font-black text-orange-600 drop-shadow-sm">{stats.totalPoints.toLocaleString()}</div>
+      {/* Background Stats */}
+      <div className="absolute top-8 left-8 bg-white/40 backdrop-blur-md p-4 rounded-2xl border border-white/50 shadow-sm transition-all hover:shadow-md">
+        <div className="text-xs uppercase tracking-widest opacity-60 font-bold mb-1">Total Points</div>
+        <div className="text-3xl font-black text-orange-600">{stats.totalPoints.toLocaleString()}</div>
       </div>
       
-      {/* Main Cookie Stage */}
-      <div className="relative flex flex-col items-center justify-center">
-        {/* Instruction overlay */}
-        {cookieState === 'intact' && !isLocked && (
-          <div className="absolute -top-48 flex flex-col items-center opacity-90 pointer-events-none transition-all">
-             <div className="flex gap-16 text-6xl animate-pulse">
-                <span>👊</span>
-                <span className="text-2xl flex flex-col items-center justify-center font-black uppercase tracking-tighter">Bring<br/>Together</span>
-                <span>👊</span>
-             </div>
-             <p className="mt-6 font-black bg-white/90 text-orange-900 px-6 py-3 rounded-2xl shadow-2xl border-2 border-orange-200 uppercase text-sm tracking-widest">
-               Tip: Keep hands separate but close (~15cm)
-             </p>
-          </div>
-        )}
+      <div className="absolute top-8 right-8 bg-white/40 backdrop-blur-md p-4 rounded-2xl border border-white/50 shadow-sm">
+        <div className="text-xs uppercase tracking-widest opacity-60 font-bold mb-1">Cookies Opened</div>
+        <div className="text-3xl font-black text-orange-600">{stats.tapCount}</div>
+      </div>
 
-        {/* Cookie Visualization */}
-        <div className={`relative transition-all duration-300 ${cookieState === 'cracking' ? 'animate-shake' : ''}`}>
-          {cookieState !== 'broken' ? (
+      {/* Main Cookie Interaction Area */}
+      <div className="relative flex flex-col items-center justify-center z-10">
+        
+        {/* Cookie Visuals */}
+        <div className={`relative transition-transform duration-300 ${cookieState === 'cracking' ? 'animate-shake' : ''}`}>
+          
+          {cookieState === 'intact' || cookieState === 'cracking' || cookieState === 'resetting' ? (
             <div 
-              className="text-[280px] md:text-[380px] select-none filter drop-shadow-[0_20px_50px_rgba(0,0,0,0.2)] transition-all duration-100"
+              className={`text-[280px] md:text-[350px] select-none cursor-pointer filter drop-shadow-2xl transition-all duration-100 active:scale-95 ${pullProgress > 0.5 ? 'animate-shake' : ''}`}
               style={{ 
-                transform: `scale(${1 + pullProgress * 0.4})`,
-                filter: isLocked ? `drop-shadow(0 0 30px rgba(251, 146, 60, 0.4))` : `drop-shadow(0 20px 50px rgba(0,0,0,0.1))`
+                transform: `scale(${1 + pullProgress * 0.15})`,
+                filter: `drop-shadow(0 0 ${pullProgress * 20}px rgba(251, 146, 60, 0.4))`
               }}
+              onClick={breakCookie}
             >
               🥠
             </div>
           ) : (
-            <div className="relative w-[400px] h-[400px] flex items-center justify-center">
-              {/* Particles/Crumbs Burst */}
-              {[...Array(8)].map((_, i) => (
-                <div 
-                  key={i} 
-                  className="particle" 
-                  style={{ 
-                    '--tw-translate-x': `${(Math.random() - 0.5) * 300}px`,
-                    '--tw-translate-y': `${(Math.random() - 0.5) * 300}px`,
-                    left: '50%',
-                    top: '50%'
-                  } as any}
-                />
-              ))}
-
-              {/* Physical Paper Slip */}
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 animate-paper z-10">
-                <div className="paper-texture w-[320px] p-6 border-t-4 border-orange-300 rounded-sm transform shadow-xl rotate-1">
-                  <p className="text-gray-400 text-[10px] uppercase font-bold tracking-widest mb-1 text-left">Your Fortune</p>
-                  <p className="text-xl font-bold italic text-gray-800 leading-tight">"{currentFortune?.text}"</p>
-                  <div className="mt-4 flex justify-between items-center">
-                    <span className="text-orange-500 font-black text-lg">+{currentFortune?.points} PTS</span>
-                    <button 
-                      onClick={resetCookie} 
-                      className="bg-orange-600 text-white px-5 py-2 rounded-lg font-black text-sm uppercase tracking-wider hover:bg-orange-700 active:scale-95 transition-all shadow-lg"
-                    >
-                      Next Cookie
-                    </button>
-                  </div>
-                </div>
+            <div className="flex gap-4 relative">
+              {/* Left Piece */}
+              <div className="text-[280px] md:text-[350px] select-none -translate-x-12 -rotate-12 filter drop-shadow-xl opacity-80">
+                🥠
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent to-orange-100/80 clip-path-right" style={{ clipPath: 'inset(0 0 0 50%)' }}></div>
+              </div>
+              {/* Right Piece */}
+              <div className="text-[280px] md:text-[350px] select-none translate-x-12 rotate-12 filter drop-shadow-xl opacity-80">
+                🥠
               </div>
 
-              {/* Broken Halves */}
-              <div className="absolute left-1/2 top-1/2 -translate-x-[110%] -translate-y-1/2 text-[280px] md:text-[380px] select-none transition-all duration-700 rotate-[-25deg] opacity-90" style={{ clipPath: 'inset(0 50% 0 0)' }}>🥠</div>
-              <div className="absolute left-1/2 top-1/2 -translate-x-[-10%] -translate-y-1/2 text-[280px] md:text-[380px] select-none transition-all duration-700 rotate-[25deg] opacity-90" style={{ clipPath: 'inset(0 0 0 50%)' }}>🥠</div>
+              {/* Fortune Slip */}
+              {currentFortune && (
+                <div className="absolute left-1/2 bottom-0 -translate-x-1/2 bg-white px-6 py-4 rounded shadow-lg border-t-4 border-orange-400 min-w-[280px] text-center animate-slip z-20">
+                  <p className="text-lg font-medium italic mb-2">"{currentFortune.text}"</p>
+                  <p className="text-sm font-bold text-orange-500">+{currentFortune.points} Points!</p>
+                  <button 
+                    onClick={resetCookie}
+                    className="mt-4 bg-orange-500 text-white px-6 py-2 rounded-full font-bold hover:bg-orange-600 transition-colors shadow-md active:scale-95"
+                  >
+                    Next Cookie
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Dynamic Status Display */}
-        <div className={`mt-20 px-12 py-6 rounded-3xl border-4 transition-all shadow-2xl min-w-[380px] text-center ${isLocked ? 'bg-orange-600 border-orange-400 text-white animate-pulse' : 'bg-white/90 border-orange-200 text-orange-950'}`}>
-          <p className="text-3xl font-black uppercase tracking-tighter">{statusMessage}</p>
-          {!isLocked && cookieState === 'intact' && (
-             <p className="text-xs opacity-50 mt-3 font-bold uppercase tracking-widest">Tip: Keep hands parallel and steady</p>
+        {/* Interaction Hint */}
+        <div className="mt-12 max-w-md text-center">
+          {cookieState === 'intact' && (
+            <div className={`transition-all duration-500 ${handsDetected ? 'opacity-100' : 'opacity-60'}`}>
+              <p className="text-xl font-medium mb-2">
+                {handsDetected 
+                  ? (isReadyToPull ? "Ready! Now pull apart! ↔️" : "Bring your hands closer together first! 👐")
+                  : "Place both hands in front of the camera to start! 🥠"}
+              </p>
+              {handsDetected && !isReadyToPull && (
+                <p className="text-sm text-orange-700/70 animate-pulse">
+                  (Move hands together to arm the pull)
+                </p>
+              )}
+              {isReadyToPull && (
+                <p className="text-sm text-green-600 font-bold animate-bounce">
+                  PULL NOW!
+                </p>
+              )}
+              <p className="mt-4 text-xs opacity-40 hover:opacity-100 transition-opacity cursor-pointer" onClick={breakCookie}>
+                (Or just click the cookie if you're in a hurry! 🖱️)
+              </p>
+            </div>
           )}
         </div>
       </div>
 
-      {/* Enhanced Camera Viewfinder */}
-      <div className="fixed bottom-8 right-8 w-72 h-52 rounded-3xl overflow-hidden border-4 border-white shadow-[0_0_50px_rgba(0,0,0,0.15)] bg-black group transition-all hover:scale-105">
-        <video ref={videoRef} className="hidden" autoPlay muted playsInline />
-        <canvas ref={canvasRef} width="640" height="480" className="w-full h-full object-cover scale-x-[-1]" />
-        {isLocked && <div className="absolute inset-0 bg-orange-500/20 border-[12px] border-orange-500 animate-pulse pointer-events-none" />}
-        <div className="absolute bottom-3 left-3 bg-black/50 backdrop-blur-md px-3 py-1 rounded-full text-[10px] text-white font-bold tracking-widest uppercase">
-          {numHandsDetected} HANDS DETECTED
+      {/* Video Preview (Hidden/Small) */}
+      <div className="fixed bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-white/50 shadow-lg bg-black/20 group hover:w-64 hover:h-48 transition-all duration-500">
+        {!isCameraReady && (
+          <div className="absolute inset-0 flex items-center justify-center text-white text-xs text-center p-2 bg-orange-900/40">
+            Requesting Camera...
+          </div>
+        )}
+        <video 
+          ref={videoRef} 
+          className="w-full h-full object-cover scale-x-[-1]" 
+          autoPlay 
+          muted 
+          playsInline
+        />
+        <div className={`absolute top-2 left-2 w-3 h-3 rounded-full ${handsDetected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
+        
+        {/* Debug Info on Hover */}
+        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-[10px] text-white font-mono p-2">
+          <div>Hands: {handsDetected ? 'YES' : 'NO'}</div>
+          <div>Ready: {isReadyToPull ? 'YES' : 'NO'}</div>
+          <div>Dist: {Math.round(lastDistanceRef.current)}</div>
+          <div className="mt-1 text-[8px] opacity-60">Start: {GESTURE_THRESHOLD_START} | Pull: {GESTURE_THRESHOLD_PULL}</div>
         </div>
       </div>
 
-      {/* Tension Progress Bar */}
+      {/* Pull Progress Visualizer */}
       {cookieState === 'intact' && pullProgress > 0 && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 w-96 h-10 bg-black/10 rounded-full overflow-hidden border-2 border-white/50 p-1.5 shadow-2xl backdrop-blur-sm">
+        <div className="fixed bottom-12 left-1/2 -translate-x-1/2 w-64 h-2 bg-white/30 rounded-full overflow-hidden border border-white/20">
           <div 
-            className="h-full bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 transition-all duration-75 rounded-full shadow-[0_0_20px_rgba(249,115,22,0.4)]" 
-            style={{ width: `${pullProgress * 100}%` }} 
+            className="h-full bg-orange-500 transition-all duration-100 ease-out"
+            style={{ width: `${pullProgress * 100}%` }}
           />
         </div>
       )}
+
+      {/* Decorative Floating Elements */}
+      <div className="fixed top-20 right-[15%] text-4xl opacity-20 select-none animate-bounce pointer-events-none">✨</div>
+      <div className="fixed bottom-40 left-[10%] text-4xl opacity-20 select-none animate-pulse pointer-events-none">🥠</div>
+      <div className="fixed top-1/2 left-[5%] text-4xl opacity-10 select-none pointer-events-none">🌟</div>
     </div>
   );
 };
