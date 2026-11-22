@@ -4,6 +4,8 @@
 
 # Run and deploy your AI Studio app
 
+Status: LOCAL ONLY — no public deployment verified; next human action: publish the app and verify its public URL. The AI Studio link below currently redirects to Google sign-in.
+
 This contains everything you need to run your app locally.
 
 View your app in AI Studio: https://ai.studio/apps/e3e8d61b-9a5f-4fac-afd4-4e3bcb540cd3
